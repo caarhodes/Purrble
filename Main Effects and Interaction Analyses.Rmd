@@ -1,0 +1,336 @@
+---
+title: "Main Effects and Interaction Analyses: ANCOVA"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include = TRUE,  warning = FALSE, message = FALSE)
+
+Purrble_Long_Master <- read_csv("Purrble_Long_Master.csv")
+View(Purrble_Long_Master)
+
+Purrble_Master_Wide <- read_csv("Purrble_Master_Wide.csv")
+View(Purrble_Master_Wide)
+
+Purrble_Master_Wide <- Purrble_Master_Wide %>%
+  mutate(
+    condition = factor(condition_num, levels = c(0, 1), labels = c("Waitlist", "Purrble")),
+    gender_id = factor(identity_group, levels = c(0, 1), labels = c("Cisgender", "TGD"))
+  )
+
+```
+
+
+```{r}
+library(dplyr)
+library(broom)
+library(car)
+library(effectsize)
+library(knitr)
+library(kableExtra)
+library(tibble)
+library(purrr)
+
+options(contrasts = c("contr.sum", "contr.poly"))
+
+outcome_map <- tibble::tribble(
+  ~section,                ~outcome,           ~pre_var,
+  "Emotion Regulation",    "Post_DERS8_Sum",   "Pre_DERS8_Sum",
+  "Depression",            "Post_PHQ9_Sum",    "Pre_PHQ9_Sum",
+  "Anxiety",               "Post_GAD7_Sum",    "Pre_GAD7_Sum"
+)
+
+make_coef_table <- function(outcome, pre_var, section, data) {
+  
+  mod <- lm(
+    reformulate(c("condition_num", pre_var, "identity_group", "age"), outcome),
+    data = data
+  )
+  
+  coef_tbl <- broom::tidy(mod, conf.int = TRUE) %>%
+    dplyr::mutate(
+      Predictor = dplyr::case_when(
+        term == "(Intercept)" ~ "(Intercept)",
+        term == "condition_num" ~ "Condition",
+        term == pre_var ~ dplyr::case_when(
+          pre_var == "Pre_DERS8_Sum" ~ "Baseline Emotion Regulation",
+          pre_var == "Pre_PHQ9_Sum"  ~ "Baseline Depression",
+          pre_var == "Pre_GAD7_Sum"  ~ "Baseline Anxiety",
+          TRUE ~ pre_var
+        ),
+        term == "identity_group" ~ "Gender Identity",
+        term == "age" ~ "Age",
+        TRUE ~ term
+      ),
+      beta_fmt = sprintf("%.2f", estimate),
+      sig = dplyr::case_when(
+        p.value < .001 ~ "***",
+        p.value < .01 ~ "**",
+        p.value < .05 ~ "*",
+        TRUE ~ ""
+      ),
+      beta_display = paste0(beta_fmt, sig),
+      p_display = dplyr::case_when(
+        p.value < .001 ~ "<.001",
+        TRUE ~ formatC(p.value, format = "f", digits = 2)
+      )
+    ) %>%
+    dplyr::select(
+      Predictor,
+      beta_display,
+      conf.low,
+      conf.high,
+      std.error,
+      statistic,
+      p_display
+    )
+  
+  eta_tbl <- effectsize::eta_squared(mod, partial = TRUE, ci = 0.95) %>%
+    tibble::as_tibble() %>%
+    dplyr::mutate(
+      Predictor = dplyr::case_when(
+        Parameter == "condition_num" ~ "Condition",
+        Parameter == pre_var ~ dplyr::case_when(
+          pre_var == "Pre_DERS8_Sum" ~ "Baseline Emotion Regulation",
+          pre_var == "Pre_PHQ9_Sum"  ~ "Baseline Depression",
+          pre_var == "Pre_GAD7_Sum"  ~ "Baseline Anxiety",
+          TRUE ~ pre_var
+        ),
+        Parameter == "identity_group" ~ "Gender Identity",
+        Parameter == "age" ~ "Age",
+        TRUE ~ Parameter
+      )
+    ) %>%
+    dplyr::select(Predictor, Eta2_partial, CI_low, CI_high)
+  
+  coef_tbl %>%
+    dplyr::left_join(eta_tbl, by = "Predictor") %>%
+    dplyr::mutate(
+      Section = section,
+      `β` = beta_display,
+      LL = round(conf.low, 2),
+      UL = round(conf.high, 2),
+      SE = round(std.error, 2),
+      t = round(statistic, 2),
+      p = p_display,
+      `Partial η²` = dplyr::if_else(is.na(Eta2_partial), "—", sprintf("%.2f", Eta2_partial)),
+      `η² LL` = dplyr::if_else(is.na(CI_low), "—", sprintf("%.2f", CI_low)),
+      `η² UL` = dplyr::if_else(is.na(CI_high), "—", sprintf("%.2f", CI_high))
+    ) %>%
+    dplyr::select(
+      Section, Predictor, `β`, LL, UL, SE, t, p, `Partial η²`, `η² LL`, `η² UL`
+    )
+}
+
+table3_df <- purrr::pmap_dfr(
+  outcome_map,
+  ~ make_coef_table(..2, ..3, ..1, Purrble_Master_Wide)
+)
+
+make_section_row <- function(label) {
+  tibble::tibble(
+    Section = label,
+    Predictor = NA_character_,
+    `β` = NA_character_,
+    LL = NA_real_,
+    UL = NA_real_,
+    SE = NA_real_,
+    t = NA_real_,
+    p = NA_character_,
+    `Partial η²` = NA_character_,
+    `η² LL` = NA_character_,
+    `η² UL` = NA_character_
+  )
+}
+
+table3_display <- dplyr::bind_rows(
+  make_section_row("Emotion Regulation"),
+  table3_df %>% dplyr::filter(Section == "Emotion Regulation") %>% dplyr::mutate(Section = NA_character_),
+  
+  make_section_row("Depression"),
+  table3_df %>% dplyr::filter(Section == "Depression") %>% dplyr::mutate(Section = NA_character_),
+  
+  make_section_row("Anxiety"),
+  table3_df %>% dplyr::filter(Section == "Anxiety") %>% dplyr::mutate(Section = NA_character_)
+) %>%
+  dplyr::mutate(
+    Predictor = dplyr::if_else(!is.na(Section), Section, Predictor),
+    LL = ifelse(is.na(LL), "", sprintf("%.2f", LL)),
+    UL = ifelse(is.na(UL), "", sprintf("%.2f", UL)),
+    SE = ifelse(is.na(SE), "", sprintf("%.2f", SE)),
+    t = ifelse(is.na(t), "", sprintf("%.2f", t))
+  ) %>%
+  dplyr::select(-Section)
+
+knitr::kable(
+  table3_display,
+  caption = "Table 3. Purrble Effects on Emotion Regulation, Depression, and Anxiety",
+  col.names = c("Predictor", "β", "LL", "UL", "SE", "t", "p", "Partial η²", "LL", "UL"),
+  align = c("l", "c", "c", "c", "c", "c", "c", "c", "c", "c"),
+  format = "markdown",
+  escape = FALSE
+) %>%
+  kableExtra::add_header_above(c(" " = 2, "95% CI" = 2, " " = 3, " " = 1, "95% CI" = 2)) %>%
+  kableExtra::kable_styling(full_width = FALSE)
+```
+
+```{r}
+library(dplyr)
+library(broom)
+library(car)
+library(effectsize)
+library(knitr)
+library(kableExtra)
+library(tibble)
+library(purrr)
+
+options(contrasts = c("contr.sum", "contr.poly"))
+
+outcome_map <- tibble::tribble(
+  ~section,                          ~outcome,                     ~pre_var,
+  "Hope Pathways",                   "Post_SHS_Pathways",          "Pre_SHS_Pathways",
+  "Hope Agency",                     "Post_SHS_Agency",            "Pre_SHS_Agency",
+  "Total Hope",                      "Post_SHS_TotalHope",         "Pre_SHS_TotalHope",
+  "Loneliness (UCLA Total)",         "Post_ucla_Sum",              "Pre_ucla_Sum",
+  "PMERQ Focus",                     "Post_pmerq_Focus_Avg",       "Pre_pmerq_Focus_Avg",
+  "PMERQ Distract",                  "Post_pmerq_Distract_Avg",    "Pre_pmerq_Distract_Avg",
+  "PMERQ Attentional Deployment",    "Post_pmerq_AD_Avg",          "Pre_pmerq_AD_Avg"
+)
+
+make_coef_table <- function(outcome, pre_var, section, data) {
+  
+  mod <- lm(
+    reformulate(c("condition_num", pre_var, "identity_group", "age"), outcome),
+    data = data
+  )
+  
+  coef_tbl <- broom::tidy(mod, conf.int = TRUE) %>%
+    dplyr::mutate(
+      Predictor = dplyr::case_when(
+        term == "(Intercept)" ~ "(Intercept)",
+        term == "condition_num" ~ "Condition",
+        term == pre_var ~ paste("Baseline", section),
+        grepl("^identity_group", term) ~ "Gender Identity",
+        term == "age" ~ "Age",
+        TRUE ~ term
+      ),
+      beta_fmt = sprintf("%.2f", estimate),
+      sig = dplyr::case_when(
+        p.value < .001 ~ "***",
+        p.value < .01 ~ "**",
+        p.value < .05 ~ "*",
+        TRUE ~ ""
+      ),
+      beta_display = paste0(beta_fmt, sig),
+      p_display = dplyr::case_when(
+        p.value < .001 ~ "<.001",
+        TRUE ~ formatC(p.value, format = "f", digits = 2)
+      )
+    ) %>%
+    dplyr::select(
+      Predictor,
+      beta_display,
+      conf.low,
+      conf.high,
+      std.error,
+      statistic,
+      p_display
+    )
+  
+  eta_tbl <- effectsize::eta_squared(mod, partial = TRUE, ci = 0.95) %>%
+    tibble::as_tibble() %>%
+    dplyr::mutate(
+      Predictor = dplyr::case_when(
+        Parameter == "condition_num" ~ "Condition",
+        Parameter == pre_var ~ paste("Baseline", section),
+        grepl("^identity_group", Parameter) ~ "Gender Identity",
+        Parameter == "age" ~ "Age",
+        TRUE ~ Parameter
+      )
+    ) %>%
+    dplyr::select(Predictor, Eta2_partial, CI_low, CI_high)
+  
+  coef_tbl %>%
+    dplyr::left_join(eta_tbl, by = "Predictor") %>%
+    dplyr::mutate(
+      Section = section,
+      `β` = beta_display,
+      LL = round(conf.low, 2),
+      UL = round(conf.high, 2),
+      SE = round(std.error, 2),
+      t = round(statistic, 2),
+      p = p_display,
+      `Partial η²` = dplyr::if_else(is.na(Eta2_partial), "—", sprintf("%.2f", Eta2_partial)),
+      `η² LL` = dplyr::if_else(is.na(CI_low), "—", sprintf("%.2f", CI_low)),
+      `η² UL` = dplyr::if_else(is.na(CI_high), "—", sprintf("%.2f", CI_high))
+    ) %>%
+    dplyr::select(
+      Section, Predictor, `β`, LL, UL, SE, t, p, `Partial η²`, `η² LL`, `η² UL`
+    )
+}
+
+supp_table_df <- purrr::pmap_dfr(
+  outcome_map,
+  ~ make_coef_table(..2, ..3, ..1, Purrble_Master_Wide)
+)
+
+make_section_row <- function(label) {
+  tibble::tibble(
+    Section = label,
+    Predictor = NA_character_,
+    `β` = NA_character_,
+    LL = NA_real_,
+    UL = NA_real_,
+    SE = NA_real_,
+    t = NA_real_,
+    p = NA_character_,
+    `Partial η²` = NA_character_,
+    `η² LL` = NA_character_,
+    `η² UL` = NA_character_
+  )
+}
+
+supp_table_display <- dplyr::bind_rows(
+  make_section_row("Hope Pathways"),
+  supp_table_df %>% dplyr::filter(Section == "Hope Pathways") %>% dplyr::mutate(Section = NA_character_),
+  
+  make_section_row("Hope Agency"),
+  supp_table_df %>% dplyr::filter(Section == "Hope Agency") %>% dplyr::mutate(Section = NA_character_),
+  
+  make_section_row("Total Hope"),
+  supp_table_df %>% dplyr::filter(Section == "Total Hope") %>% dplyr::mutate(Section = NA_character_),
+  
+  make_section_row("Loneliness (UCLA Total)"),
+  supp_table_df %>% dplyr::filter(Section == "Loneliness (UCLA Total)") %>% dplyr::mutate(Section = NA_character_),
+  
+  make_section_row("PMERQ Focus"),
+  supp_table_df %>% dplyr::filter(Section == "PMERQ Focus") %>% dplyr::mutate(Section = NA_character_),
+  
+  make_section_row("PMERQ Distract"),
+  supp_table_df %>% dplyr::filter(Section == "PMERQ Distract") %>% dplyr::mutate(Section = NA_character_),
+  
+  make_section_row("PMERQ Attentional Deployment"),
+  supp_table_df %>% dplyr::filter(Section == "PMERQ Attentional Deployment") %>% dplyr::mutate(Section = NA_character_)
+) %>%
+  dplyr::mutate(
+    Predictor = dplyr::if_else(!is.na(Section), Section, Predictor),
+    LL = ifelse(is.na(LL), "", sprintf("%.2f", LL)),
+    UL = ifelse(is.na(UL), "", sprintf("%.2f", UL)),
+    SE = ifelse(is.na(SE), "", sprintf("%.2f", SE)),
+    t = ifelse(is.na(t), "", sprintf("%.2f", t))
+  ) %>%
+  dplyr::select(-Section)
+
+knitr::kable(
+  supp_table_display,
+  caption = "Supplementary Table X. Purrble Effects on Hope, Loneliness, and PMERQ Outcomes",
+  col.names = c("Predictor", "β", "LL", "UL", "SE", "t", "p", "Partial η²", "LL", "UL"),
+  align = c("l", "c", "c", "c", "c", "c", "c", "c", "c", "c"),
+  format = "markdown",
+  escape = FALSE
+) %>%
+  kableExtra::add_header_above(c(" " = 2, "95% CI" = 2, " " = 3, " " = 1, "95% CI" = 2)) %>%
+  kableExtra::kable_styling(full_width = FALSE)
+```
+
+
